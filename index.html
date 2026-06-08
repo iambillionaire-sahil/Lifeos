@@ -1,4 +1,4 @@
-<!<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -1909,8 +1909,8 @@ Rules: Morning Prayer 08:00-09:00, Evening Prayer 18:00-18:30. If wake>09:00 ski
     // ── API callers ──────────────────────────────────────────────
 
     async function callGemini() {
-      // Try models in order - flash-lite is most available on free tier
-      const models = ['gemini-2.0-flash-lite', 'gemini-1.5-flash', 'gemini-1.5-flash-latest'];
+      // Current working free-tier models (June 2026)
+      const models = ['gemini-2.5-flash', 'gemini-2.5-flash-preview-05-20', 'gemini-2.0-flash'];
       let lastErr = '';
 
       for (const model of models) {
@@ -1930,10 +1930,11 @@ Rules: Morning Prayer 08:00-09:00, Evening Prayer 18:00-18:30. If wake>09:00 ski
           if (!res.ok) {
             lastErr = data.error?.message || `HTTP ${res.status}`;
             console.warn(`Gemini ${model} failed:`, lastErr);
-            continue; // try next model
+            continue;
           }
           let text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
           if (!text) { lastErr = 'Empty response'; continue; }
+          console.log(`✅ Gemini ${model} succeeded`);
           return text.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
         } catch(e) {
           lastErr = e.message;
@@ -2854,4 +2855,4 @@ style.textContent = `
 document.head.appendChild(style);
 </script>
 </body>
-</html>
+  </html>
