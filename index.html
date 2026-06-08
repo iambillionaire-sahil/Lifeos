@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -475,12 +475,20 @@ input[type=range]{accent-color:var(--accent)}
     <div class="srow"><span>Study Target (hrs)</span><input type="number" class="fc" style="width:64px;text-align:center" id="inp-wtgt" min="0" max="16" step="0.5" value="6" oninput="App.setPref('studyTarget',parseFloat(this.value)||6)"/></div>
   </div>
   <div class="sg-group">
-    <p class="sg-title">AI Scheduler (Gemini)</p>
+    <p class="sg-title">AI Scheduler</p>
+    <div style="font-size:11px;color:var(--text2);padding:6px 0 10px">Add one or both keys. If both present, Grok is used first. Falls back to Gemini if Grok fails.</div>
     <div class="srow" style="flex-direction:column;align-items:flex-start;gap:6px">
-      <span style="font-size:13px">Gemini API Key</span>
+      <span style="font-size:13px">🔵 Gemini API Key</span>
       <input type="password" class="fc" style="width:100%;font-size:13px" id="inp-gemini-key" placeholder="AIza..." oninput="App.setPref('geminiKey',this.value)"/>
-      <span style="font-size:11px;color:var(--text2)">Get free key at aistudio.google.com · Stored locally only</span>
+      <span style="font-size:11px;color:var(--text2)">aistudio.google.com · Free tier available</span>
     </div>
+    <div style="height:10px"></div>
+    <div class="srow" style="flex-direction:column;align-items:flex-start;gap:6px">
+      <span style="font-size:13px">🟠 Grok API Key</span>
+      <input type="password" class="fc" style="width:100%;font-size:13px" id="inp-grok-key" placeholder="xai-..." oninput="App.setPref('grokKey',this.value)"/>
+      <span style="font-size:11px;color:var(--text2)">console.x.ai · 25 req/hr free on grok-3-mini</span>
+    </div>
+    <div style="padding:8px 0 4px" id="active-ai-badge"></div>
   </div>
   <div class="sg-group">
     <p class="sg-title">Data</p>
@@ -784,7 +792,7 @@ const S = {
   // smart schedule state
   wakeOverrides: {},   // {date: actualWakeMins}
   carryover: [],       // [{id,title,category,durationMins,fromDate,targetDate,priority,notes,icon,goalId,chapter}]
-  cfg:{name:'',theme:'dark',accent:'#7C3AED',sleepTarget:7,studyTarget:6,scheduledWake:'06:00',scheduledBed:'23:00',notifEnabled:false,geminiKey:''},
+  cfg:{name:'',theme:'dark',accent:'#7C3AED',sleepTarget:7,studyTarget:6,scheduledWake:'06:00',scheduledBed:'23:00',notifEnabled:false,geminiKey:'',grokKey:''},
   // computed
   schedule:[], energyCurve:[], conflicts:[],
   notificationQueue:[], // {taskId, taskName, scheduledTime, sent:bool}
@@ -1808,6 +1816,15 @@ function renderSettings(){
   const si=qs('#inp-stgt');if(si&&!si.matches(':focus'))si.value=S.cfg.sleepTarget;
   const wi=qs('#inp-wtgt');if(wi&&!wi.matches(':focus'))wi.value=S.cfg.studyTarget;
   const gk=qs('#inp-gemini-key');if(gk&&!gk.matches(':focus'))gk.value=S.cfg.geminiKey||'';
+  const xk=qs('#inp-grok-key');if(xk&&!xk.matches(':focus'))xk.value=S.cfg.grokKey||'';
+  const badge=qs('#active-ai-badge');
+  if(badge){
+    const hasGrok=!!S.cfg.grokKey, hasGemini=!!S.cfg.geminiKey;
+    if(hasGrok&&hasGemini) badge.innerHTML='<span class="pill pill-ok">🟠 Grok active · 🔵 Gemini as fallback</span>';
+    else if(hasGrok)        badge.innerHTML='<span class="pill pill-ok">🟠 Grok active</span>';
+    else if(hasGemini)      badge.innerHTML='<span class="pill pill-info">🔵 Gemini active</span>';
+    else                    badge.innerHTML='<span class="pill pill-warn">⚠️ No API key set</span>';
+  }
   const perm=typeof Notification!=='undefined'?Notification.permission:'unsupported';
   txt(qs('#notif-status'),perm==='granted'?'✅ Enabled':perm==='denied'?'❌ Blocked':'⚠️ Not Set');
   document.querySelectorAll('.tbtn').forEach(b=>b.classList.toggle('on',b.dataset.t===S.cfg.theme));
@@ -1860,65 +1877,133 @@ const App={
       return;
     }
 
-    const apiKey = S.cfg.geminiKey || '';
-    if (!apiKey) {
-      toast('❌ Add your Gemini API key in Settings first', 'error', 4000);
+    const geminiKey = S.cfg.geminiKey || '';
+    const grokKey   = S.cfg.grokKey   || '';
+
+    if (!geminiKey && !grokKey) {
+      toast('❌ Add a Gemini or Grok API key in Settings first', 'error', 4000);
       App.nav('settings');
       return;
     }
 
     saveSleepData(sleepTimeInput, wakeTimeInput);
-    showLoadingIndicator('🔄 Generating schedule with Gemini AI...');
 
-    try {
-      const goalsText = S.goals
-        .filter(g => g.category === 'study' && g.status !== 'completed')
-        .slice(0, 5)
-        .map((g, i) => `${i+1}. ${g.title} (Priority: ${g.priority})`)
-        .join('\n') || 'No specific goals';
+    const goalsText = S.goals
+      .filter(g => g.category === 'study' && g.status !== 'completed')
+      .slice(0, 5)
+      .map((g, i) => `${i+1}. ${g.title} (Priority: ${g.priority})`)
+      .join('\n') || 'No specific goals';
 
-      const habitsText = S.habits
-        .slice(0, 5)
-        .map(h => `- ${h.name || h.title} (general)`)
-        .join('\n') || 'No specific habits';
+    const habitsText = S.habits
+      .slice(0, 5)
+      .map(h => `- ${h.name || h.title} (general)`)
+      .join('\n') || 'No specific habits';
 
-      const systemPrompt = `You are a smart scheduling assistant for a Cloud Engineer's transformation program.
+    const systemPrompt = `You are a smart scheduling assistant for a Cloud Engineer's transformation program.
 Return ONLY valid JSON matching this schema exactly, no markdown, no explanation:
 {"schedule":[{"time":"HH:MM","title":"Task","duration":"60min","category":"Study","locked":false}],"prayers":{"morning":true,"evening":true,"reason":""},"meals":{"breakfast":"HH:MM","lunch":"HH:MM","dinner":"20:00","conflicts":[]},"gym":"HH:MM-HH:MM","conflicts":[],"warnings":[],"recommendations":[],"totalHours":0,"availableHours":0,"overflow":false}
 Rules: Morning Prayer 08:00-09:00, Evening Prayer 18:00-18:30. If wake>09:00 skip both. Breakfast=wake+90min, Lunch=breakfast+210min, Dinner fixed 20:00. All times 24h HH:MM format. Duration format: "XXmin".`;
 
-      const userPrompt = `Sleep: ${sleepTimeInput}, Wake: ${wakeTimeInput}\nGoals:\n${goalsText}\nHabits:\n${habitsText}\nGenerate daily schedule. Return ONLY valid JSON.`;
+    const userPrompt = `Sleep: ${sleepTimeInput}, Wake: ${wakeTimeInput}\nGoals:\n${goalsText}\nHabits:\n${habitsText}\nGenerate daily schedule. Return ONLY valid JSON.`;
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`
-        {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            contents: [{role:'user', parts:[{text: systemPrompt + '\n\n' + userPrompt}]}],
-            generationConfig: {temperature: 0.2, maxOutputTokens: 2048, responseMimeType: 'application/json'}
-          })
+    // ── API callers ──────────────────────────────────────────────
+
+    async function callGemini() {
+      // Try models in order - flash-lite is most available on free tier
+      const models = ['gemini-2.0-flash-lite', 'gemini-1.5-flash', 'gemini-1.5-flash-latest'];
+      let lastErr = '';
+
+      for (const model of models) {
+        try {
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
+            {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                contents: [{role:'user', parts:[{text: systemPrompt + '\n\n' + userPrompt}]}],
+                generationConfig: {temperature: 0.2, maxOutputTokens: 2048}
+              })
+            }
+          );
+          const data = await res.json();
+          if (!res.ok) {
+            lastErr = data.error?.message || `HTTP ${res.status}`;
+            console.warn(`Gemini ${model} failed:`, lastErr);
+            continue; // try next model
+          }
+          let text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          if (!text) { lastErr = 'Empty response'; continue; }
+          return text.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+        } catch(e) {
+          lastErr = e.message;
+          console.warn(`Gemini ${model} error:`, e.message);
         }
-      );
+      }
+      throw new Error('Gemini failed: ' + lastErr);
+    }
 
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.error?.message || `API Error ${response.status}`);
+    async function callGrok() {
+      const res = await fetch('https://api.x.ai/v1/chat/completions', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${grokKey}`},
+        body: JSON.stringify({
+          model: 'grok-3-mini',
+          temperature: 0.2,
+          max_tokens: 2048,
+          messages: [
+            {role: 'system', content: systemPrompt},
+            {role: 'user',   content: userPrompt}
+          ]
+        })
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error('Grok: ' + (e.error?.message || `HTTP ${res.status}`));
+      }
+      const data = await res.json();
+      let text = data.choices?.[0]?.message?.content || '';
+      return text.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+    }
+
+    // ── Run whichever key(s) are present ────────────────────────
+
+    showLoadingIndicator('🔄 Generating AI schedule...');
+
+    try {
+      let rawText = '';
+      let usedApi = '';
+
+      if (grokKey) {
+        try {
+          showLoadingIndicator('🟠 Generating with Grok...');
+          rawText = await callGrok();
+          usedApi = 'Grok';
+        } catch (grokErr) {
+          console.warn('Grok failed, trying Gemini...', grokErr.message);
+          if (geminiKey) {
+            showLoadingIndicator('🔵 Grok failed, trying Gemini...');
+            rawText = await callGemini();
+            usedApi = 'Gemini (fallback)';
+          } else {
+            throw grokErr;
+          }
+        }
+      } else {
+        showLoadingIndicator('🔵 Generating with Gemini...');
+        rawText = await callGemini();
+        usedApi = 'Gemini';
       }
 
-      const data = await response.json();
-      let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      rawText = rawText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+      const aiSchedule = JSON.parse(rawText);
 
-      const claudeSchedule = JSON.parse(rawText);
-
-      const schedule = claudeSchedule.schedule.map((item, idx) => ({
+      const schedule = aiSchedule.schedule.map((item, idx) => ({
         bid: uid('c' + idx),
         title: item.title || 'Untitled',
         category: (item.category || 'other').toLowerCase(),
         icon: getCategoryIcon((item.category || 'other').toLowerCase()),
         sm: toMins(item.time),
-        em: toMins(item.time) + parseInt(item.duration) || 60,
+        em: toMins(item.time) + (parseInt(item.duration) || 60),
         startTime: item.time,
         endTime: toTime(toMins(item.time) + (parseInt(item.duration) || 60)),
         status: 'pending',
@@ -1930,22 +2015,24 @@ Rules: Morning Prayer 08:00-09:00, Evening Prayer 18:00-18:30. If wake>09:00 ski
       S.schedule = schedule.sort((a, b) => a.sm - b.sm);
       S.date = todayStr();
 
-      if (claudeSchedule.warnings?.length) {
-        claudeSchedule.warnings.forEach(w => toast('⚠️ ' + w, 'warning', 4000));
+      if (aiSchedule.warnings?.length) {
+        aiSchedule.warnings.forEach(w => toast('⚠️ ' + w, 'warning', 4000));
       }
-      if (claudeSchedule.overflow) {
-        toast(`⚠️ Schedule overflow: ${(claudeSchedule.totalHours||0).toFixed(1)}h needed vs ${(claudeSchedule.availableHours||0).toFixed(1)}h available`, 'warning', 5000);
+      if (aiSchedule.overflow) {
+        toast(`⚠️ Overflow: ${(aiSchedule.totalHours||0).toFixed(1)}h needed vs ${(aiSchedule.availableHours||0).toFixed(1)}h available`, 'warning', 5000);
       }
 
       render();
-      toast('✅ Schedule generated! ' +
-        `Prayers: ${claudeSchedule.prayers?.morning ? '✓' : '✗'}/${claudeSchedule.prayers?.evening ? '✓' : '✗'} ` +
-        `Meals: B:${claudeSchedule.meals?.breakfast} L:${claudeSchedule.meals?.lunch} D:${claudeSchedule.meals?.dinner}`,
+      toast(`✅ ${usedApi} schedule ready! ` +
+        `Prayers: ${aiSchedule.prayers?.morning ? '✓' : '✗'}/${aiSchedule.prayers?.evening ? '✓' : '✗'} ` +
+        `B:${aiSchedule.meals?.breakfast} L:${aiSchedule.meals?.lunch} D:${aiSchedule.meals?.dinner}`,
         'success', 4000);
 
     } catch (err) {
-      console.error('Gemini error:', err);
-      toast('❌ Gemini error: ' + err.message, 'error', 5000);
+      console.error('AI schedule error:', err);
+      // Show full error so user knows what's wrong
+      const msg = err.message || 'Unknown error';
+      toast('❌ ' + msg.slice(0, 120), 'error', 8000);
     } finally {
       hideLoadingIndicator();
     }
